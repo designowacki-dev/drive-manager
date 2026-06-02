@@ -1,386 +1,382 @@
 import { useSession, signIn, signOut } from "next-auth/react"
 import { useState, useEffect, useCallback, useRef } from "react"
 
+const PALETTE = [
+  "#ef4444","#f97316","#f59e0b","#eab308","#84cc16","#22c55e","#10b981","#14b8a6",
+  "#06b6d4","#0ea5e9","#3b82f6","#6366f1","#8b5cf6","#a855f7","#d946ef","#ec4899",
+  "#f43f5e","#78716c","#64748b","#3a3f4b",
+]
+
+const MIESIACE = ["stycznia","lutego","marca","kwietnia","maja","czerwca","lipca","sierpnia","września","października","listopada","grudnia"]
+function dzisiejszaData() {
+  const d = new Date()
+  return `${d.getDate()} ${MIESIACE[d.getMonth()]} ${d.getFullYear()}`
+}
+
 export default function Home() {
   const { data: session, status } = useSession()
-  const [folders, setFolders] = useState([])
-  const [filtered, setFiltered] = useState([])
+  const [dark, setDark] = useState(true)
+  const [clients, setClients] = useState([])
+  const [tab, setTab] = useState("send")
+  const [view, setView] = useState("grid")
   const [selected, setSelected] = useState(null)
-  const [search, setSearch] = useState("")
+  const [folderItems, setFolderItems] = useState([])   // dated folders of client
+  const [openFolder, setOpenFolder] = useState(null)
+  const [openFiles, setOpenFiles] = useState([])       // files in dated folder
   const [loading, setLoading] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [fileQueue, setFileQueue] = useState([])
-  const [toasts, setToasts] = useState([])
-  const [showAddClient, setShowAddClient] = useState(false)
-  const [showAddFolder, setShowAddFolder] = useState(false)
-  const [newClientName, setNewClientName] = useState("")
-  const [newFolderName, setNewFolderName] = useState("")
   const [over, setOver] = useState(false)
-  const toastId = useRef(0)
+  const [queue, setQueue] = useState([])
+  const [toast, setToast] = useState(null)
+  const [lastLink, setLastLink] = useState(null)
+  const [colorPickerFor, setColorPickerFor] = useState(null)
+  const [showAddClient, setShowAddClient] = useState(false)
+  const [newClientName, setNewClientName] = useState("")
+  const fileRef = useRef()
+  const toastTimer = useRef()
 
-  const toast = useCallback((msg, type = "success") => {
-    const id = ++toastId.current
-    setToasts(p => [...p, { id, msg, type }])
-    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3500)
-  }, [])
+  const T = dark ? {
+    bg:"#0d0f13", bgGrad:"#14171d", surface:"rgba(255,255,255,.04)", surfaceHover:"rgba(255,255,255,.07)",
+    border:"rgba(255,255,255,.08)", borderStrong:"rgba(255,255,255,.15)",
+    text:"#f1f3f7", textDim:"rgba(255,255,255,.55)", textFaint:"rgba(255,255,255,.38)",
+    accent:"#5b8ff9", inputBg:"rgba(0,0,0,.3)", panel:"#1a1d24",
+  } : {
+    bg:"#f4f5f7", bgGrad:"#e8eaee", surface:"#ffffff", surfaceHover:"#f8f9fb",
+    border:"rgba(0,0,0,.1)", borderStrong:"rgba(0,0,0,.18)",
+    text:"#1a1d24", textDim:"rgba(0,0,0,.55)", textFaint:"rgba(0,0,0,.4)",
+    accent:"#3b82f6", inputBg:"rgba(0,0,0,.04)", panel:"#ffffff",
+  }
+
+  const showToast = (msg) => {
+    setToast(msg)
+    clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 4000)
+  }
 
   const loadFolders = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch("/api/folders")
       const data = await res.json()
-      setFolders(data.folders || [])
-      setFiltered(data.folders || [])
-    } catch {
-      toast("Błąd ładowania folderów", "error")
-    }
+      setClients(data.folders || [])
+    } catch { showToast("Błąd ładowania") }
     setLoading(false)
-  }, [toast])
+  }, [])
 
-  useEffect(() => {
-    if (session) loadFolders()
-  }, [session, loadFolders])
+  useEffect(() => { if (session) loadFolders() }, [session, loadFolders])
 
-  useEffect(() => {
-    const q = search.toLowerCase()
-    setFiltered(q ? folders.filter(f => f.name.toLowerCase().includes(q)) : folders)
-  }, [search, folders])
+  const visibleClients = clients.filter(c => c.cat === tab)
+
+  const openClient = async (c) => {
+    setSelected(c); setView("client"); setLastLink(null); setQueue([])
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/folder-contents?folderId=${c.id}`)
+      const data = await res.json()
+      setFolderItems((data.items || []).filter(i => i.isFolder))
+    } catch { setFolderItems([]) }
+    setLoading(false)
+  }
+
+  const openDatedFolder = async (folder) => {
+    setOpenFolder(folder); setView("folder")
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/folder-contents?folderId=${folder.id}`)
+      const data = await res.json()
+      setOpenFiles((data.items || []).filter(i => !i.isFolder))
+    } catch { setOpenFiles([]) }
+    setLoading(false)
+  }
 
   const createClient = async () => {
     if (!newClientName.trim()) return
     try {
-      const res = await fetch("/api/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newClientName.trim() }),
+      await fetch("/api/folders", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newClientName.trim(), cat: tab, color: "#64748b" }),
       })
-      const data = await res.json()
-      toast(`✓ Folder "${data.folder.name}" utworzony`)
-      setNewClientName("")
-      setShowAddClient(false)
-      loadFolders()
-    } catch {
-      toast("Błąd tworzenia folderu", "error")
-    }
+      showToast(`✓ Dodano „${newClientName.trim()}"`)
+      setNewClientName(""); setShowAddClient(false); loadFolders()
+    } catch { showToast("Błąd tworzenia") }
   }
 
-  const createSubfolder = async () => {
-    if (!newFolderName.trim() || !selected) return
-    try {
-      const res = await fetch("/api/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newFolderName.trim(), parentId: selected.id }),
-      })
-      const data = await res.json()
-      toast(`✓ Podfolder "${data.folder.name}" utworzony`)
-      setNewFolderName("")
-      setShowAddFolder(false)
-    } catch {
-      toast("Błąd tworzenia podfolderu", "error")
-    }
+  const setColor = async (id, color) => {
+    setClients(prev => prev.map(c => c.id === id ? { ...c, color } : c))
+    setColorPickerFor(null)
+    try { await fetch("/api/folders", { method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ id, color }) }) } catch {}
+  }
+
+  const moveClient = async (id, cat) => {
+    setClients(prev => prev.map(c => c.id === id ? { ...c, cat } : c))
+    if (selected?.id === id) setSelected(s => ({ ...s, cat }))
+    showToast(cat === "send" ? "✓ Przeniesiono do „Do wysłania”" : "✓ Przeniesiono do „Materiały”")
+    try { await fetch("/api/folders", { method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ id, cat }) }) } catch {}
   }
 
   const toBase64 = file => new Promise((res, rej) => {
-    const r = new FileReader()
-    r.onload = () => res(r.result.split(",")[1])
-    r.onerror = rej
-    r.readAsDataURL(file)
+    const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file)
   })
 
-  const uploadFiles = async (files) => {
+  const handleFiles = async (files) => {
     if (!selected || !files.length) return
-    setUploading(true)
-    const queue = [...files].map(f => ({ name: f.name, status: "pending", file: f }))
-    setFileQueue(queue)
-
-    let ok = 0
-    for (let i = 0; i < queue.length; i++) {
-      setFileQueue(q => q.map((item, idx) => idx === i ? { ...item, status: "uploading" } : item))
+    const q = [...files].map(f => ({ name: f.name, status: "pending" }))
+    setQueue(q)
+    let link = null
+    for (let i = 0; i < q.length; i++) {
+      setQueue(prev => prev.map((it, idx) => idx === i ? { ...it, status:"uploading" } : it))
       try {
-        const base64 = await toBase64(queue[i].file)
-        await fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: queue[i].name,
-            mimeType: queue[i].file.type,
-            base64,
-            folderId: selected.id,
-          }),
+        const base64 = await toBase64(files[i])
+        const res = await fetch("/api/upload", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ name: files[i].name, mimeType: files[i].type, base64, folderId: selected.id }),
         })
-        setFileQueue(q => q.map((item, idx) => idx === i ? { ...item, status: "done" } : item))
-        ok++
+        const data = await res.json()
+        if (data.file?.webViewLink) link = { name: data.dateFolder, url: data.file.webViewLink }
+        setQueue(prev => prev.map((it, idx) => idx === i ? { ...it, status:"done" } : it))
       } catch {
-        setFileQueue(q => q.map((item, idx) => idx === i ? { ...item, status: "error" } : item))
+        setQueue(prev => prev.map((it, idx) => idx === i ? { ...it, status:"error" } : it))
       }
     }
-
-    if (ok) toast(`✓ Przesłano ${ok} plik${ok > 1 ? "i" : ""} do "${selected.name}"`)
-    setUploading(false)
-    setTimeout(() => setFileQueue([]), 2000)
+    if (link) setLastLink(link)
+    showToast(`✓ Przesłano ${files.length} plik${files.length>1?"i":""} → ${dzisiejszaData()}`)
+    openClient(selected)  // odśwież listę folderów
+    setTimeout(() => setQueue([]), 1500)
   }
 
-  const handleDrop = e => {
-    e.preventDefault(); setOver(false)
-    uploadFiles([...e.dataTransfer.files])
-  }
+  const handleDrop = e => { e.preventDefault(); setOver(false); handleFiles([...e.dataTransfer.files]) }
+  const copyLink = () => { if (lastLink) { navigator.clipboard?.writeText(lastLink.url); showToast("✓ Link skopiowany") } }
 
-  if (status === "loading") return (
-    <div style={S.center}>
-      <div style={S.spinner} />
-    </div>
-  )
+  // ===== LOGIN SCREENS =====
+  if (status === "loading") return <Center T={T}><Spinner T={T} /></Center>
 
   if (!session) return (
-    <div style={S.center}>
-      <div style={S.loginBox}>
-        <div style={S.loginIcon}>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="white" stroke="none">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          </svg>
+    <Center T={T}>
+      <Font />
+      <div style={{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:16, padding:40, width:360, textAlign:"center" }}>
+        <div style={{ width:56, height:56, borderRadius:14, background:`linear-gradient(135deg,${T.accent},#818cf8)`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </div>
-        <h1 style={S.loginTitle}>Drive Manager</h1>
-        <p style={S.loginSub}>Zaloguj się przez Google żeby zarządzać folderami klientów</p>
-        <button style={S.btnGoogle} onClick={() => signIn("google")}>
-          <svg width="18" height="18" viewBox="0 0 24 24">
-            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-          </svg>
+        <h1 style={{ fontSize:22, fontWeight:800, marginBottom:8 }}>Drive Manager</h1>
+        <p style={{ fontSize:13, color:T.textDim, marginBottom:24 }}>Zaloguj się przez Google, aby zarządzać folderami klientów</p>
+        <button onClick={() => signIn("google")} style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:10, width:"100%", background:"#fff", border:"none", color:"#1a1a1a", padding:"11px 20px", borderRadius:9, fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"'Montserrat',sans-serif" }}>
+          <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
           Zaloguj przez Google
         </button>
       </div>
-    </div>
+    </Center>
   )
 
+  // ===== APP =====
   return (
-    <div style={S.root}>
-      <style>{css}</style>
+    <div style={{ minHeight:"100vh", position:"relative", overflow:"hidden", background:T.bg, color:T.text, fontFamily:"'Montserrat',system-ui,sans-serif", transition:"background .3s,color .3s" }}>
+      <Font />
+      <style>{`
+        * { box-sizing:border-box; margin:0; padding:0; }
+        @keyframes fadeUp { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:translateY(0);} }
+        @keyframes slideIn { from{opacity:0;transform:translateX(16px);} to{opacity:1;transform:translateX(0);} }
+        @keyframes spin { to{transform:rotate(360deg);} }
+        .tile { transition:all .22s cubic-bezier(.4,0,.2,1); }
+        .tile:hover { transform:translateY(-3px); }
+        .dlbtn { opacity:0; transition:opacity .15s; }
+        .thumb:hover .dlbtn { opacity:1; }
+        input:focus { outline:none; border-color:${T.accent} !important; }
+        input::placeholder { color:${T.textFaint}; }
+      `}</style>
 
-      {/* HEADER */}
-      <header style={S.header}>
-        <div style={S.logo}>
-          <div style={S.logoDot}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
+      <div style={{ position:"absolute", inset:0, zIndex:0, background:`radial-gradient(ellipse at 70% 0%, ${T.bgGrad}, transparent 55%)` }} />
+
+      {/* top bar */}
+      <div style={{ position:"relative", zIndex:5, display:"flex", justifyContent:"space-between", alignItems:"center", padding:"16px 24px 0" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:28, height:28, borderRadius:7, background:`linear-gradient(135deg,${T.accent},#818cf8)`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           </div>
-          <span style={S.logoName}>Drive Manager</span>
-          <span style={S.logoBadge}>{folders.length} folderów</span>
+          <span style={{ fontWeight:700, fontSize:14 }}>Drive Manager</span>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:12, color:"#64748b" }}>{session.user.email}</span>
-          <button style={S.btnSmGhost} onClick={() => signOut()}>Wyloguj</button>
+          <span style={{ fontSize:12, color:T.textFaint }}>{session.user.email}</span>
+          <button onClick={() => setDark(d=>!d)} style={chip(T)}>{dark?"☀️":"🌙"}</button>
+          <button onClick={() => signOut()} style={chip(T)}>Wyloguj</button>
         </div>
-      </header>
+      </div>
 
-      <div style={S.layout}>
-        {/* SIDEBAR */}
-        <aside style={S.aside}>
-          <div style={{ padding:"10px 10px 6px" }}>
-            <div style={S.searchBox}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-              <input style={S.searchInput} placeholder="Szukaj…" value={search} onChange={e => setSearch(e.target.value)} />
+      <div style={{ position:"relative", zIndex:5, maxWidth:960, margin:"0 auto", padding:"28px 24px 60px" }}>
+
+        {/* GRID */}
+        {view === "grid" && (
+          <div style={{ animation:"fadeUp .4s ease" }}>
+            <div style={{ textAlign:"center", marginBottom:24 }}>
+              <h1 style={{ fontSize:44, fontWeight:800, letterSpacing:"-1.5px", marginBottom:10, lineHeight:1 }}>Twoi klienci</h1>
+              <p style={{ fontSize:14, color:T.textDim }}>Kliknij kafelek, aby wgrać pliki. Kropka = kolor. ⇄ = przenieś.</p>
             </div>
-          </div>
-          <div style={{ display:"flex", gap:6, padding:"4px 10px 6px" }}>
-            <button className="btn-primary" style={S.btnSm} onClick={() => setShowAddClient(p => !p)}>+ Nowy klient</button>
-            <button className="btn-ghost" style={S.btnSm} onClick={loadFolders} disabled={loading}>{loading ? "…" : "↻"}</button>
-          </div>
 
-          {showAddClient && (
-            <div style={S.addForm}>
-              <input style={S.input} placeholder="Nazwa klienta…" value={newClientName}
-                onChange={e => setNewClientName(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && createClient()} autoFocus />
-              <div style={{ display:"flex", gap:5 }}>
-                <button className="btn-accent" style={{ ...S.btnSm, flex:1 }} onClick={createClient}>Utwórz</button>
-                <button className="btn-ghost" style={S.btnSm} onClick={() => setShowAddClient(false)}>Anuluj</button>
+            <div style={{ display:"flex", justifyContent:"center", marginBottom:28 }}>
+              <div style={{ display:"flex", gap:4, background:T.surface, border:`1px solid ${T.border}`, borderRadius:100, padding:5 }}>
+                {[["send","📤 Do wysłania"],["source","🗂️ Materiały"]].map(([k,label])=>(
+                  <button key={k} onClick={()=>setTab(k)} style={{ fontSize:13, fontWeight:600, padding:"9px 20px", borderRadius:100, cursor:"pointer", fontFamily:"inherit", border:"none", background: tab===k?T.accent:"transparent", color: tab===k?"#fff":T.textDim }}>
+                    {label} <span style={{opacity:.6,fontWeight:500}}>· {clients.filter(c=>c.cat===k).length}</span>
+                  </button>
+                ))}
               </div>
             </div>
-          )}
 
-          <div style={S.sectionLabel}>Klienci</div>
-          <div style={S.clientList}>
-            {filtered.length === 0 && <div style={S.emptySidebar}>{loading ? "Ładowanie…" : "Brak folderów"}</div>}
-            {filtered.map(f => (
-              <div key={f.id} className={`client-row${selected?.id === f.id ? " active" : ""}`}
-                style={S.clientRow} onClick={() => { setSelected(f); setShowAddFolder(false); setFileQueue([]) }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" opacity=".6">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                </svg>
-                <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.name}</span>
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        {/* MAIN */}
-        <main style={S.main}>
-          {!selected ? (
-            <div style={S.mainEmpty}>
-              <div style={S.emptyIcon}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-                </svg>
-              </div>
-              <p style={{ fontSize:13, color:"#64748b" }}>Wybierz klienta z listy</p>
-            </div>
-          ) : (
-            <div style={{ maxWidth:580, animation:"fadeUp .2s ease" }}>
-              {/* Client header */}
-              <div style={S.clientHeader}>
-                <div style={S.clientAvatar}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="rgba(91,143,249,.5)" stroke="#5b8ff9" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                  </svg>
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:17, fontWeight:600, marginBottom:2 }}>{selected.name}</div>
-                  <a href={selected.webViewLink} target="_blank" rel="noreferrer" style={{ fontSize:11, color:"#5b8ff9", textDecoration:"none" }}>Otwórz w Drive →</a>
-                </div>
-                <button className="btn-ghost" style={S.btnSm} onClick={() => { setSelected(null); setFileQueue([]) }}>✕</button>
-              </div>
-
-              {/* Subfolder */}
-              <div style={{ marginBottom:20 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                  <span style={S.sectionTitle}>Podfolder</span>
-                  <button style={S.btnLink} onClick={() => setShowAddFolder(p => !p)}>+ Nowy folder</button>
-                </div>
-                {showAddFolder && (
-                  <div style={{ display:"flex", gap:8, animation:"fadeUp .15s ease" }}>
-                    <input style={{ ...S.input, flex:1 }} placeholder="Nazwa folderu…" value={newFolderName}
-                      onChange={e => setNewFolderName(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && createSubfolder()} autoFocus />
-                    <button className="btn-accent" style={{ ...S.btnSm, padding:"8px 14px" }} onClick={createSubfolder}>Utwórz</button>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14 }}>
+              {visibleClients.map(c=>(
+                <div key={c.id} className="tile" onClick={()=>openClient(c)}
+                  style={{ cursor:"pointer", borderRadius:16, padding:"26px 16px", minHeight:128, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10, background:T.surface, border:`1px solid ${T.border}`, position:"relative", boxShadow:dark?"none":"0 1px 3px rgba(0,0,0,.06)" }}>
+                  <button onClick={(e)=>{ e.stopPropagation(); setColorPickerFor(colorPickerFor===c.id?null:c.id) }} style={{ position:"absolute", top:10, left:10, width:14, height:14, borderRadius:"50%", background:c.color, border:"2px solid rgba(255,255,255,.25)", cursor:"pointer", padding:0 }} />
+                  <button title="Przenieś" onClick={(e)=>{ e.stopPropagation(); moveClient(c.id, c.cat==="send"?"source":"send") }} style={{ position:"absolute", top:8, right:8, width:22, height:22, borderRadius:6, background:T.surfaceHover, border:`1px solid ${T.border}`, color:T.textDim, cursor:"pointer", fontSize:12, padding:0 }}>⇄</button>
+                  <div style={{ width:46, height:46, borderRadius:12, background:c.color, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:`0 4px 14px ${c.color}55` }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                   </div>
-                )}
-              </div>
-
-              {/* Upload */}
-              <div style={S.sectionTitle}>Prześlij pliki</div>
-              <div style={{ ...S.dropzone, ...(over ? S.dropzoneOver : {}) }}
-                onClick={() => document.getElementById("fi").click()}
-                onDragOver={e => { e.preventDefault(); setOver(true) }}
-                onDragLeave={() => setOver(false)}
-                onDrop={handleDrop}>
-                <div style={S.dropIcon}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5b8ff9" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
-                    <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
-                  </svg>
+                  <span style={{ fontSize:13.5, fontWeight:600, textAlign:"center" }}>{c.name}</span>
+                  {colorPickerFor===c.id && (
+                    <div onClick={e=>e.stopPropagation()} style={{ position:"absolute", top:30, left:10, zIndex:20, background:T.panel, border:`1px solid ${T.borderStrong}`, borderRadius:12, padding:10, boxShadow:"0 8px 30px rgba(0,0,0,.35)", display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:6, width:180 }}>
+                      {PALETTE.map(p=>(<button key={p} onClick={()=>setColor(c.id,p)} style={{ width:26, height:26, borderRadius:7, background:p, border:c.color===p?"2px solid #fff":"2px solid transparent", cursor:"pointer", padding:0 }} />))}
+                    </div>
+                  )}
                 </div>
-                <p style={{ color:"#94a3b8", fontSize:13, margin:0 }}>Przeciągnij pliki lub kliknij</p>
-                <small style={{ color:"#64748b", fontSize:11 }}>Trafią bezpośrednio do folderu {selected.name}</small>
-                <input id="fi" type="file" multiple style={{ display:"none" }} onChange={e => uploadFiles([...e.target.files])} />
+              ))}
+              {/* dodaj klienta */}
+              <div className="tile" onClick={()=>setShowAddClient(true)} style={{ cursor:"pointer", borderRadius:16, padding:"26px 16px", minHeight:128, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, background:"transparent", border:`1.5px dashed ${T.borderStrong}`, color:T.textDim }}>
+                <div style={{ fontSize:28, fontWeight:300 }}>+</div>
+                <span style={{ fontSize:12, fontWeight:500 }}>Nowy klient</span>
               </div>
+            </div>
 
-              {/* File queue */}
-              {fileQueue.length > 0 && (
-                <div style={{ display:"flex", flexDirection:"column", gap:5, marginTop:10 }}>
-                  {fileQueue.map((f, i) => (
-                    <div key={i} style={S.fileItem}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>
-                      </svg>
-                      <span style={{ flex:1, fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.name}</span>
-                      <span style={{
-                        fontSize:11, width:16, height:16, borderRadius:"50%",
-                        display:"flex", alignItems:"center", justifyContent:"center",
-                        background: f.status === "done" ? "rgba(54,211,153,.2)" : f.status === "error" ? "rgba(251,113,133,.2)" : "rgba(91,143,249,.2)",
-                        color: f.status === "done" ? "#36d399" : f.status === "error" ? "#fb7185" : "#5b8ff9",
-                      }}>
-                        {f.status === "done" ? "✓" : f.status === "error" ? "✕" : "…"}
-                      </span>
+            {showAddClient && (
+              <div onClick={()=>setShowAddClient(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", zIndex:60, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <div onClick={e=>e.stopPropagation()} style={{ background:T.panel, border:`1px solid ${T.borderStrong}`, borderRadius:16, padding:24, width:340 }}>
+                  <h3 style={{ fontSize:16, fontWeight:700, marginBottom:14 }}>Nowy klient</h3>
+                  <input value={newClientName} onChange={e=>setNewClientName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createClient()} placeholder="Nazwa klienta…" autoFocus style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`, borderRadius:9, padding:"10px 12px", color:T.text, fontSize:13, fontFamily:"inherit", marginBottom:12 }} />
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={createClient} style={{ flex:1, background:T.accent, border:"none", color:"#fff", borderRadius:9, padding:"10px", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Utwórz folder</button>
+                    <button onClick={()=>setShowAddClient(false)} style={chip(T)}>Anuluj</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* CLIENT */}
+        {view === "client" && selected && (
+          <div style={{ animation:"fadeUp .3s ease", maxWidth:640, margin:"0 auto" }}>
+            <button onClick={()=>{ setView("grid"); setLastLink(null); setQueue([]) }} style={navBtn(T)}>← Wszyscy klienci</button>
+            <div style={{ display:"flex", alignItems:"center", gap:14, margin:"20px 0 24px" }}>
+              <div style={{ width:48, height:48, borderRadius:12, background:selected.color, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:`0 6px 20px ${selected.color}55` }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              </div>
+              <div style={{ flex:1 }}>
+                <h2 style={{ fontSize:28, fontWeight:700, letterSpacing:"-.5px" }}>{selected.name}</h2>
+                <span style={{ fontSize:11, color:T.textFaint }}>{selected.cat==="send"?"📤 Do wysłania":"🗂️ Materiały"}</span>
+              </div>
+              <a href={selected.webViewLink} target="_blank" rel="noreferrer" style={{ ...navBtn(T), textDecoration:"none" }}>Drive ↗</a>
+              <button onClick={()=>moveClient(selected.id, selected.cat==="send"?"source":"send")} style={navBtn(T)}>⇄</button>
+            </div>
+
+            {folderItems.length>0 && (
+              <div style={{ marginBottom:28 }}>
+                <div style={{ fontSize:11, letterSpacing:"1.5px", color:T.textFaint, marginBottom:12, fontWeight:600 }}>FOLDERY</div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
+                  {folderItems.map(f=>(
+                    <div key={f.id} className="tile" onClick={()=>openDatedFolder(f)} style={{ cursor:"pointer", borderRadius:14, padding:"20px 16px", background:T.surface, border:`1px solid ${T.border}`, display:"flex", flexDirection:"column", gap:8 }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill={selected.color}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                      <span style={{ fontSize:13, fontWeight:600 }}>{f.name}</span>
                     </div>
                   ))}
                 </div>
-              )}
+              </div>
+            )}
+
+            <div style={{ fontSize:11, letterSpacing:"1.5px", color:T.textFaint, marginBottom:12, fontWeight:600 }}>{selected.cat==="send"?"PRZEŚLIJ MINIATURKI":"PRZEŚLIJ MATERIAŁY"}</div>
+            <div onClick={()=>fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setOver(true)}} onDragLeave={()=>setOver(false)} onDrop={handleDrop}
+              style={{ border:`1.5px dashed ${over?selected.color:T.borderStrong}`, borderRadius:16, padding:"36px 20px", textAlign:"center", cursor:"pointer", background:over?`${selected.color}11`:T.surface, display:"flex", flexDirection:"column", alignItems:"center", gap:12, transition:"all .2s" }}>
+              <div style={{ width:48, height:48, borderRadius:12, background:`${selected.color}22`, border:`1px solid ${selected.color}55`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={selected.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+              </div>
+              <p style={{ fontSize:14, color:T.textDim, fontWeight:500 }}>Przeciągnij pliki lub kliknij</p>
+              <small style={{ fontSize:12, color:T.textFaint }}>Trafią do folderu „{dzisiejszaData()}"</small>
+              <input ref={fileRef} type="file" multiple style={{display:"none"}} onChange={e=>handleFiles([...e.target.files])} />
             </div>
-          )}
-        </main>
+
+            {queue.length>0 && (
+              <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:14 }}>
+                {queue.map((f,i)=>(
+                  <div key={i} style={{ display:"flex", alignItems:"center", gap:10, background:T.surface, border:`1px solid ${T.border}`, borderRadius:10, padding:"10px 14px" }}>
+                    <span style={{ flex:1, fontSize:12 }}>{f.name}</span>
+                    <span style={{ width:16, height:16, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, background:f.status==="done"?"rgba(54,211,153,.2)":f.status==="error"?"rgba(251,113,133,.2)":`${selected.color}33`, color:f.status==="done"?"#36d399":f.status==="error"?"#fb7185":selected.color, border:f.status==="uploading"?`2px solid ${selected.color}`:"none", borderTopColor:f.status==="uploading"?"transparent":undefined, animation:f.status==="uploading"?"spin .6s linear infinite":"none" }}>{f.status==="done"?"✓":f.status==="error"?"✕":""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {lastLink && (
+              <div style={{ marginTop:16, padding:"14px 16px", borderRadius:12, background:"rgba(54,211,153,.08)", border:"1px solid rgba(54,211,153,.25)", animation:"fadeUp .3s ease" }}>
+                <div style={{ fontSize:12, color:"#36d399", marginBottom:8, fontWeight:600 }}>✓ Folder „{lastLink.name}" gotowy</div>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <input readOnly value={lastLink.url} style={{ flex:1, background:T.inputBg, border:`1px solid ${T.border}`, borderRadius:8, padding:"8px 10px", color:T.textDim, fontSize:11, fontFamily:"monospace" }} />
+                  <button onClick={copyLink} style={{ background:"#36d399", border:"none", color:"#0a0608", borderRadius:8, padding:"8px 14px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Kopiuj</button>
+                  <a href={lastLink.url} target="_blank" rel="noreferrer" style={{ background:T.surfaceHover, border:`1px solid ${T.border}`, color:T.text, borderRadius:8, padding:"8px 14px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit", textDecoration:"none" }}>Otwórz</a>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* FOLDER (podgląd plików + pobieranie) */}
+        {view === "folder" && selected && openFolder && (
+          <div style={{ animation:"fadeUp .3s ease", maxWidth:640, margin:"0 auto" }}>
+            <button onClick={()=>setView("client")} style={navBtn(T)}>← {selected.name}</button>
+            <div style={{ display:"flex", alignItems:"center", gap:14, margin:"20px 0 24px" }}>
+              <div style={{ width:48, height:48, borderRadius:12, background:selected.color, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              </div>
+              <h2 style={{ fontSize:24, fontWeight:700 }}>{openFolder.name}</h2>
+            </div>
+            {openFiles.length === 0 ? (
+              <p style={{ color:T.textFaint, fontSize:13 }}>{loading ? "Ładowanie…" : "Folder jest pusty"}</p>
+            ) : (
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
+                {openFiles.map(f=>(
+                  <div key={f.id} className="thumb" style={{ borderRadius:14, overflow:"hidden", background:T.surface, border:`1px solid ${T.border}`, position:"relative" }}>
+                    <div style={{ height:110, background:`${selected.color}22`, display:"flex", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden" }}>
+                      {f.isImage ? (
+                        <img src={`/api/file?id=${f.id}`} alt={f.name} loading="lazy" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+                      ) : (
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={T.textFaint} strokeWidth="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                      )}
+                      <a className="dlbtn" href={`/api/file?id=${f.id}&download=1`} title="Pobierz" style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, background:"rgba(0,0,0,.55)", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      </a>
+                    </div>
+                    <div style={{ padding:"10px 12px", fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.name}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <a href={openFolder.webViewLink} target="_blank" rel="noreferrer" style={{ marginTop:16, display:"block", textAlign:"center", background:selected.color, color:"#fff", borderRadius:12, padding:"12px", fontSize:13, fontWeight:600, textDecoration:"none" }}>
+              Otwórz folder w Google Drive ↗
+            </a>
+          </div>
+        )}
       </div>
 
-      {/* Toasts */}
-      <div style={S.toasts}>
-        {toasts.map(t => (
-          <div key={t.id} style={{ ...S.toast, ...(t.type === "error" ? S.toastError : t.type === "info" ? S.toastInfo : S.toastSuccess) }}>
-            {t.msg}
-          </div>
-        ))}
-      </div>
+      {toast && (
+        <div style={{ position:"fixed", bottom:24, right:24, zIndex:50, padding:"11px 18px", borderRadius:10, background:"rgba(54,211,153,.12)", border:"1px solid rgba(54,211,153,.3)", color:"#36d399", fontSize:13, animation:"slideIn .2s ease", backdropFilter:"blur(8px)", fontWeight:500 }}>{toast}</div>
+      )}
     </div>
   )
 }
 
-const C = {
-  bg: "#0a0c10", surface: "#12151c", card: "#191d27", border: "#252a38",
-  accent: "#5b8ff9", accentDim: "#1a2a4a", text: "#e2e6f0", muted: "#64748b", subtle: "#94a3b8",
+function Font() {
+  return <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap');`}</style>
 }
-
-const S = {
-  root: { minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" },
-  center: { height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:C.bg },
-  spinner: { width:32, height:32, border:`2px solid ${C.border}`, borderTopColor:C.accent, borderRadius:"50%", animation:"spin .7s linear infinite" },
-  loginBox: { background:C.surface, border:`1px solid ${C.border}`, borderRadius:16, padding:40, width:360, textAlign:"center" },
-  loginIcon: { width:56, height:56, borderRadius:14, background:`linear-gradient(135deg,${C.accent},#818cf8)`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px", boxShadow:`0 0 24px rgba(91,143,249,.4)` },
-  loginTitle: { fontSize:22, fontWeight:700, marginBottom:8 },
-  loginSub: { fontSize:13, color:C.subtle, marginBottom:24, lineHeight:1.6 },
-  btnGoogle: { display:"flex", alignItems:"center", justifyContent:"center", gap:10, width:"100%", background:"#fff", border:"none", color:"#1a1a1a", padding:"11px 20px", borderRadius:9, fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"inherit" },
-  header: { height:56, background:C.surface, borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 24px" },
-  logo: { display:"flex", alignItems:"center", gap:10 },
-  logoDot: { width:28, height:28, borderRadius:7, background:`linear-gradient(135deg,${C.accent},#818cf8)`, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:`0 0 14px rgba(91,143,249,.4)` },
-  logoName: { fontSize:14, fontWeight:600, letterSpacing:"-.3px" },
-  logoBadge: { fontSize:10, background:C.accentDim, color:C.accent, border:`1px solid rgba(91,143,249,.3)`, padding:"2px 7px", borderRadius:20, fontWeight:500 },
-  layout: { display:"flex", height:"calc(100vh - 56px)" },
-  aside: { width:240, background:C.surface, borderRight:`1px solid ${C.border}`, display:"flex", flexDirection:"column" },
-  searchBox: { display:"flex", alignItems:"center", gap:6, background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"6px 10px" },
-  searchInput: { background:"none", border:"none", outline:"none", color:C.text, fontSize:12, fontFamily:"inherit", flex:1 },
-  btnSm: { padding:"5px 10px", borderRadius:7, fontSize:11, fontWeight:500, cursor:"pointer", fontFamily:"inherit", border:`1px solid ${C.border}` },
-  addForm: { padding:"4px 10px 10px", display:"flex", flexDirection:"column", gap:6 },
-  input: { background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"7px 10px", color:C.text, fontSize:12, fontFamily:"inherit", outline:"none" },
-  sectionLabel: { padding:"8px 12px 4px", fontSize:10, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:".8px" },
-  clientList: { flex:1, overflowY:"auto", padding:"0 6px 6px" },
-  emptySidebar: { padding:16, textAlign:"center", color:C.muted, fontSize:12 },
-  clientRow: { display:"flex", alignItems:"center", gap:8, padding:"7px 8px", borderRadius:7, cursor:"pointer", border:"1px solid transparent", marginBottom:1, fontSize:12.5, transition:"all .12s" },
-  main: { flex:1, padding:28, overflowY:"auto" },
-  mainEmpty: { height:"100%", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 },
-  emptyIcon: { width:52, height:52, borderRadius:13, background:C.card, border:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"center", marginBottom:4 },
-  clientHeader: { display:"flex", alignItems:"center", gap:12, paddingBottom:18, marginBottom:22, borderBottom:`1px solid ${C.border}` },
-  clientAvatar: { width:42, height:42, borderRadius:10, background:C.accentDim, border:`1px solid rgba(91,143,249,.3)`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
-  sectionTitle: { fontSize:10, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:".7px", marginBottom:8, display:"block" },
-  btnLink: { background:"none", border:"none", color:C.accent, fontSize:11, cursor:"pointer", fontFamily:"inherit" },
-  dropzone: { border:`1.5px dashed ${C.border}`, borderRadius:12, padding:"32px 20px", textAlign:"center", cursor:"pointer", background:C.card, transition:"all .2s", display:"flex", flexDirection:"column", alignItems:"center", gap:10, marginBottom:12 },
-  dropzoneOver: { borderColor:C.accent, background:"rgba(30,42,74,.6)" },
-  dropIcon: { width:44, height:44, borderRadius:11, background:C.accentDim, border:`1px solid rgba(91,143,249,.3)`, display:"flex", alignItems:"center", justifyContent:"center" },
-  fileItem: { display:"flex", alignItems:"center", gap:10, background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 12px" },
-  toasts: { position:"fixed", bottom:20, right:20, display:"flex", flexDirection:"column", gap:6, zIndex:999 },
-  toast: { padding:"9px 14px", borderRadius:9, fontSize:12.5, animation:"slideIn .2s ease", maxWidth:280 },
-  toastSuccess: { background:"rgba(54,211,153,.12)", border:"1px solid rgba(54,211,153,.3)", color:"#36d399" },
-  toastError: { background:"rgba(251,113,133,.12)", border:"1px solid rgba(251,113,133,.3)", color:"#fb7185" },
-  toastInfo: { background:"rgba(91,143,249,.12)", border:"1px solid rgba(91,143,249,.3)", color:"#5b8ff9" },
-  btnSmGhost: { background:C.card, border:`1px solid ${C.border}`, color:C.subtle, padding:"5px 10px", borderRadius:7, fontSize:11, cursor:"pointer", fontFamily:"inherit" },
+function Center({ children, T }) {
+  return <div style={{ height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:T.bg, fontFamily:"'Montserrat',sans-serif" }}>{children}</div>
 }
-
-const css = `
-  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0a0c10; }
-  input::placeholder { color: #64748b; }
-  input:focus { border-color: #5b8ff9 !important; }
-  ::-webkit-scrollbar { width: 3px; }
-  ::-webkit-scrollbar-thumb { background: #252a38; border-radius: 3px; }
-  .client-row:hover { background: #191d27; }
-  .client-row.active { background: #1a2a4a; border-color: rgba(91,143,249,.35) !important; color: #a8c4ff; }
-  .btn-primary { background: #1a2a4a; border-color: rgba(91,143,249,.4) !important; color: #5b8ff9; }
-  .btn-ghost { background: #191d27; color: #94a3b8; }
-  .btn-accent { background: #5b8ff9; border: none !important; color: white; }
-  button:hover { opacity: .85; }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-  @keyframes fadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
-  @keyframes slideIn { from { opacity:0; transform:translateX(16px); } to { opacity:1; transform:translateX(0); } }
-  @keyframes spin { to { transform: rotate(360deg); } }
-`
+function Spinner({ T }) {
+  return <div style={{ width:32, height:32, border:`2px solid ${T.border}`, borderTopColor:T.accent, borderRadius:"50%", animation:"spin .7s linear infinite" }} />
+}
+const chip = (T) => ({ background:T.surface, border:`1px solid ${T.border}`, color:T.text, borderRadius:100, padding:"6px 14px", fontSize:12, cursor:"pointer", fontFamily:"'Montserrat',sans-serif", fontWeight:500 })
+const navBtn = (T) => ({ background:T.surface, border:`1px solid ${T.border}`, color:T.textDim, borderRadius:100, padding:"7px 16px", fontSize:12, cursor:"pointer", fontFamily:"'Montserrat',sans-serif", fontWeight:500 })
