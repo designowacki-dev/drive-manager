@@ -31,6 +31,10 @@ export default function Home() {
   const [colorPickerFor, setColorPickerFor] = useState(null)
   const [showAddClient, setShowAddClient] = useState(false)
   const [newClientName, setNewClientName] = useState("")
+  const [reviewModal, setReviewModal] = useState(null)  // {folderId, name}
+  const [reviewCode, setReviewCode] = useState("")
+  const [reviewResult, setReviewResult] = useState(null)
+  const [reviewStatus, setReviewStatus] = useState(null) // statuses for open folder
   const fileRef = useRef()
   const toastTimer = useRef()
 
@@ -80,10 +84,11 @@ export default function Home() {
   const openDatedFolder = async (folder) => {
     setOpenFolder(folder); setView("folder")
     setLoading(true)
+    loadReviewStatus(folder.id)
     try {
       const res = await fetch(`/api/folder-contents?folderId=${folder.id}`)
       const data = await res.json()
-      setOpenFiles((data.items || []).filter(i => !i.isFolder))
+      setOpenFiles((data.items || []).filter(i => !i.isFolder && i.name !== "_review.json"))
     } catch { setOpenFiles([]) }
     setLoading(false)
   }
@@ -145,6 +150,33 @@ export default function Home() {
 
   const handleDrop = e => { e.preventDefault(); setOver(false); handleFiles([...e.dataTransfer.files]) }
   const copyLink = () => { if (lastLink) { navigator.clipboard?.writeText(lastLink.url); showToast("✓ Link skopiowany") } }
+
+  // Otwórz okno wysyłki do akceptacji
+  const openReviewModal = (folder) => { setReviewModal(folder); setReviewCode(""); setReviewResult(null) }
+
+  // Utwórz link akceptacji
+  const createReview = async () => {
+    if (!reviewModal || !reviewCode.trim()) return
+    try {
+      const res = await fetch("/api/review-create", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ folderId: reviewModal.id, code: reviewCode.trim(), clientName: selected?.name || "" }),
+      })
+      const data = await res.json()
+      if (!res.ok) { showToast(data.error || "Błąd"); return }
+      const url = `${window.location.origin}/akceptacja/${reviewModal.id}`
+      setReviewResult({ url, code: reviewCode.trim(), count: data.count })
+    } catch { showToast("Błąd połączenia") }
+  }
+
+  // Załaduj statusy akceptacji dla otwartego folderu
+  const loadReviewStatus = async (folderId) => {
+    setReviewStatus(null)
+    try {
+      const res = await fetch(`/api/review-get?folderId=${folderId}`)
+      if (res.ok) { const data = await res.json(); setReviewStatus(data.files) }
+    } catch {}
+  }
 
   // ===== LOGIN SCREENS =====
   if (status === "loading") return <Center T={T}><Spinner T={T} /></Center>
@@ -338,7 +370,14 @@ export default function Home() {
               <p style={{ color:T.textFaint, fontSize:13 }}>{loading ? "Ładowanie…" : "Folder jest pusty"}</p>
             ) : (
               <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
-                {openFiles.map(f=>(
+                {openFiles.map(f=>{
+                  const rev = reviewStatus?.find(r => r.id === f.id)
+                  const badge = rev && rev.status !== "pending"
+                    ? (rev.status === "approved"
+                        ? { t:"✓ Zaakceptowane", c:"#36d399", b:"rgba(54,211,153,.9)" }
+                        : { t:"✏ Poprawki", c:"#fff", b:"rgba(251,113,133,.92)" })
+                    : (reviewStatus ? { t:"Oczekuje", c:"#0d0f13", b:"rgba(251,191,36,.92)" } : null)
+                  return (
                   <div key={f.id} className="thumb" style={{ borderRadius:14, overflow:"hidden", background:T.surface, border:`1px solid ${T.border}`, position:"relative" }}>
                     <div style={{ height:110, background:`${selected.color}22`, display:"flex", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden" }}>
                       {f.isImage ? (
@@ -346,21 +385,73 @@ export default function Home() {
                       ) : (
                         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={T.textFaint} strokeWidth="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
                       )}
+                      {badge && <span style={{ position:"absolute", top:8, left:8, fontSize:10, fontWeight:700, color:badge.c, background:badge.b, padding:"2px 8px", borderRadius:20 }}>{badge.t}</span>}
                       <a className="dlbtn" href={`/api/file?id=${f.id}&download=1`} title="Pobierz" style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, background:"rgba(0,0,0,.55)", display:"flex", alignItems:"center", justifyContent:"center", textDecoration:"none" }}>
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                       </a>
                     </div>
-                    <div style={{ padding:"10px 12px", fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.name}</div>
+                    <div style={{ padding:"10px 12px" }}>
+                      <div style={{ fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.name}</div>
+                      {rev?.status === "changes" && rev.feedback && (
+                        <div style={{ marginTop:6, fontSize:11, color:T.text, background:"rgba(251,113,133,.1)", border:"1px solid rgba(251,113,133,.25)", borderRadius:6, padding:"6px 8px" }}>
+                          <span style={{ color:"#fb7185", fontWeight:600 }}>Poprawki: </span>{rev.feedback}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                ))}
+                )})}
               </div>
             )}
-            <a href={openFolder.webViewLink} target="_blank" rel="noreferrer" style={{ marginTop:16, display:"block", textAlign:"center", background:selected.color, color:"#fff", borderRadius:12, padding:"12px", fontSize:13, fontWeight:600, textDecoration:"none" }}>
+
+            {/* Wyślij do akceptacji */}
+            <button onClick={()=>openReviewModal(openFolder)} style={{ marginTop:16, width:"100%", background:T.accent, border:"none", color:"#fff", borderRadius:12, padding:"13px", fontSize:13.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              Wyślij do akceptacji klientowi
+            </button>
+
+            <a href={openFolder.webViewLink} target="_blank" rel="noreferrer" style={{ marginTop:10, display:"block", textAlign:"center", background:T.surface, border:`1px solid ${T.border}`, color:T.textDim, borderRadius:12, padding:"11px", fontSize:12.5, fontWeight:600, textDecoration:"none" }}>
               Otwórz folder w Google Drive ↗
             </a>
           </div>
         )}
       </div>
+
+      {/* OKNO: Wyślij do akceptacji */}
+      {reviewModal && (
+        <div onClick={()=>setReviewModal(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", zIndex:60, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+          <div onClick={e=>e.stopPropagation()} style={{ background:T.panel, border:`1px solid ${T.borderStrong}`, borderRadius:16, padding:24, width:420, maxWidth:"100%" }}>
+            {!reviewResult ? (
+              <>
+                <h3 style={{ fontSize:17, fontWeight:700, marginBottom:6 }}>Wyślij do akceptacji</h3>
+                <p style={{ fontSize:12.5, color:T.textDim, marginBottom:16 }}>Folder „{reviewModal.name}" — ustaw kod dostępu, który podasz klientowi.</p>
+                <label style={{ fontSize:11, color:T.textFaint, fontWeight:600 }}>KOD DOSTĘPU</label>
+                <input value={reviewCode} onChange={e=>setReviewCode(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createReview()} placeholder="np. konop2026" autoFocus
+                  style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`, borderRadius:9, padding:"10px 12px", color:T.text, fontSize:14, fontFamily:"inherit", margin:"6px 0 16px" }} />
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={createReview} disabled={!reviewCode.trim()} style={{ flex:1, background:T.accent, border:"none", color:"#fff", borderRadius:9, padding:"11px", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit", opacity: reviewCode.trim()?1:.4 }}>Utwórz link</button>
+                  <button onClick={()=>setReviewModal(null)} style={chip(T)}>Anuluj</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 style={{ fontSize:17, fontWeight:700, marginBottom:6, color:T.accent }}>✓ Link gotowy</h3>
+                <p style={{ fontSize:12.5, color:T.textDim, marginBottom:16 }}>{reviewResult.count} miniaturek udostępnionych. Wyślij klientowi link i kod.</p>
+                <label style={{ fontSize:11, color:T.textFaint, fontWeight:600 }}>LINK DLA KLIENTA</label>
+                <div style={{ display:"flex", gap:8, margin:"6px 0 12px" }}>
+                  <input readOnly value={reviewResult.url} style={{ flex:1, background:T.inputBg, border:`1px solid ${T.border}`, borderRadius:8, padding:"9px 11px", color:T.textDim, fontSize:11.5, fontFamily:"monospace" }} />
+                  <button onClick={()=>{ navigator.clipboard?.writeText(reviewResult.url); showToast("✓ Link skopiowany") }} style={{ background:T.accent, border:"none", color:"#fff", borderRadius:8, padding:"0 14px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Kopiuj</button>
+                </div>
+                <label style={{ fontSize:11, color:T.textFaint, fontWeight:600 }}>KOD DOSTĘPU</label>
+                <div style={{ display:"flex", gap:8, margin:"6px 0 16px" }}>
+                  <input readOnly value={reviewResult.code} style={{ flex:1, background:T.inputBg, border:`1px solid ${T.border}`, borderRadius:8, padding:"9px 11px", color:T.text, fontSize:14, fontFamily:"monospace", letterSpacing:"1px", fontWeight:600 }} />
+                  <button onClick={()=>{ navigator.clipboard?.writeText(reviewResult.code); showToast("✓ Kod skopiowany") }} style={{ background:T.surfaceHover, border:`1px solid ${T.border}`, color:T.text, borderRadius:8, padding:"0 14px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Kopiuj</button>
+                </div>
+                <button onClick={()=>{ setReviewModal(null); loadReviewStatus(reviewModal.id) }} style={{ width:"100%", background:T.accent, border:"none", color:"#fff", borderRadius:9, padding:"11px", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Gotowe</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div style={{ position:"fixed", bottom:24, right:24, zIndex:50, padding:"11px 18px", borderRadius:10, background:"rgba(54,211,153,.12)", border:"1px solid rgba(54,211,153,.3)", color:"#36d399", fontSize:13, animation:"slideIn .2s ease", backdropFilter:"blur(8px)", fontWeight:500 }}>{toast}</div>
