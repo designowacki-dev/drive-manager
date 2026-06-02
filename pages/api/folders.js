@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   if (req.method === "GET") {
     // List folders
     const response = await drive.files.list({
-      q: `mimeType = 'application/vnd.google-apps.folder' and parentId = 'root' and trashed = false`,
+      q: `mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`,
       fields: "files(id, name, createdTime, modifiedTime, webViewLink)",
       orderBy: "name",
       pageSize: 200,
