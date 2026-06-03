@@ -164,7 +164,7 @@ export default function Home() {
       })
       const data = await res.json()
       if (!res.ok) { showToast(data.error || "Błąd"); return }
-      const url = `${window.location.origin}/akceptacja/${reviewModal.id}`
+      const url = `${window.location.origin}/akceptacja?id=${reviewModal.id}`
       setReviewResult({ url, code: reviewCode.trim(), count: data.count })
     } catch { showToast("Błąd połączenia") }
   }
